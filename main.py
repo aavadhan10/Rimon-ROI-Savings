@@ -351,7 +351,7 @@ def load_detailed_data(csv_path):
 def check_for_detailed_csv():
     """Check if detailed CSV exists"""
     import os
-    for path in ['./data/matter_description.csv', 'matter_description.csv', './matter_description.csv']:
+    for path in ['./data/matter_description.csv', '/mnt/user-data/uploads/matter_description.csv', './matter_description.csv']:
         if os.path.exists(path):
             return path
     return None
@@ -513,7 +513,7 @@ def main():
     
     # Load data
     try:
-        csv_path = '2025_Jan-Oct_time_entry_export.csv'
+        csv_path = '/mnt/user-data/uploads/2025_Jan-Oct_time_entry_export.csv'
         df = load_data(csv_path)
         
         # Handle flat fee entries - count as 1 hour for analysis
@@ -1546,10 +1546,14 @@ def main():
     # ========================================================================
     if has_detailed_data:
         with tab6:
-            st.header("🔬 Task-Level Deep Dive Analysis")
+            st.header("🔬 Task-Level Deep Dive: October 2025 Sample")
             
             st.markdown("""
-            ### 🎯 Ultra-Precise Automation Analysis
+            ### 🎯 Ultra-Precise Automation Analysis (October Data)
+            
+            **⚠️ Note:** This analyzes October 2025 data only (16K entries), which is ALREADY INCLUDED 
+            in the main Jan-Oct dataset. This tab shows what's possible with detailed task descriptions.
+            
             This tab uses **actual task descriptions** for much more accurate automation scoring.
             
             **Examples from your data:**
@@ -1559,8 +1563,20 @@ def main():
             - "Negotiate settlement" → 25% automatable
             """)
             
+            st.info("""
+            💡 **What This Tab Shows:**
+            
+            This is a **deep dive into October 2025** using detailed task descriptions. 
+            October's data is already included in the Jan-Oct totals in the other tabs.
+            
+            This tab demonstrates:
+            - How much MORE PRECISE we can be with detailed task descriptions
+            - What automation looks like at the task level vs matter level
+            - A model for future analysis if you export detailed descriptions for all months
+            """)
+            
             # Load detailed data
-            with st.spinner("🔬 Loading detailed task data..."):
+            with st.spinner("🔬 Loading October detailed task data..."):
                 detailed_df = load_detailed_data(detailed_csv_path)
             
             if detailed_df is not None and len(detailed_df) > 0:
@@ -1695,24 +1711,39 @@ def main():
                 # Comparison
                 st.subheader("📊 Task-Level vs Matter-Level Comparison")
                 
+                st.warning("""
+                **⚠️ Important:** Both analyses use the SAME October 2025 data:
+                - Task-Level (this tab): October analyzed by detailed task descriptions
+                - Matter-Level (main tabs): October analyzed by matter names only
+                - The October data is already included in the Jan-Oct totals shown in other tabs
+                """)
+                
                 col1, col2 = st.columns(2)
                 
                 with col1:
                     st.success(f"""
-                    **🔬 Task-Level Analysis:**
-                    - Dataset: {len(detailed_df):,} entries
+                    **🔬 Task-Level (October Sample):**
+                    - Dataset: October 2025 only
+                    - Entries: {len(detailed_df):,}
                     - Automatable: {task_auto:,.0f} hours
                     - Rate: {task_rate:.1f}%
-                    - Precision: High (task descriptions)
+                    - Precision: HIGH (task descriptions)
                     """)
                 
                 with col2:
+                    # Calculate October data from main dataset for comparison
+                    oct_df = filtered_df[filtered_df['Month'] == 10]
+                    oct_auto = oct_df['Automatable_Hours'].sum() if len(oct_df) > 0 else 0
+                    oct_total = oct_df['Billable Hours'].sum() if len(oct_df) > 0 else 0
+                    oct_rate = (oct_auto / oct_total * 100) if oct_total > 0 else 0
+                    
                     st.info(f"""
-                    **📊 Matter-Level Analysis:**
-                    - Dataset: {len(filtered_df):,} entries
-                    - Automatable: {automatable_hours:,.0f} hours
-                    - Rate: {automation_rate:.1f}%
-                    - Precision: Medium (matter names)
+                    **📊 Matter-Level (October Same Data):**
+                    - Dataset: October 2025 only  
+                    - Entries: {len(oct_df):,}
+                    - Automatable: {oct_auto:,.0f} hours
+                    - Rate: {oct_rate:.1f}%
+                    - Precision: MEDIUM (matter names)
                     """)
                 
                 difference = abs(task_rate - automation_rate)
