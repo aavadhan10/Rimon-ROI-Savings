@@ -513,7 +513,7 @@ def main():
     
     # Load data
     try:
-        csv_path = '/mnt/user-data/uploads/2025_Jan-Oct_time_entry_export.csv'
+        csv_path = '2025_Jan-Oct_time_entry_export.csv'
         df = load_data(csv_path)
         
         # Handle flat fee entries - count as 1 hour for analysis
