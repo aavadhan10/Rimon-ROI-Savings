@@ -351,7 +351,7 @@ def load_detailed_data(csv_path):
 def check_for_detailed_csv():
     """Check if detailed CSV exists"""
     import os
-    for path in ['./data/matter_description.csv', '/mnt/user-data/uploads/matter_description.csv', './matter_description.csv']:
+    for path in ['./data/matter_description.csv', 'matter_description.csv', './matter_description.csv']:
         if os.path.exists(path):
             return path
     return None
@@ -513,7 +513,7 @@ def main():
     
     # Load data
     try:
-        csv_path = '/mnt/user-data/uploads/2025_Jan-Oct_time_entry_export.csv'
+        csv_path = '2025_Jan-Oct_time_entry_export.csv'
         df = load_data(csv_path)
         
         # Handle flat fee entries - count as 1 hour for analysis
