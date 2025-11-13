@@ -351,7 +351,7 @@ def load_detailed_data(csv_path):
 def check_for_detailed_csv():
     """Check if detailed CSV exists"""
     import os
-    for path in ['./data/matter_description.csv', '/mnt/user-data/uploads/matter_description.csv', './matter_description.csv']:
+    for path in ['./data/matter_description.csv', 'matter_description.csv', './matter_description.csv']:
         if os.path.exists(path):
             return path
     return None
