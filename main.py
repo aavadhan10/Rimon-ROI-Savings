@@ -1,1 +1,1461 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+from datetime import datetime
+import re
+from collections import Counter
 
+# Page configuration
+st.set_page_config(
+    page_title="Rimon Legal AI Automation Dashboard",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS
+st.markdown("""
+    <style>
+    .main-header {
+        font-size: 3rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+    }
+    .insight-box {
+        background-color: #e8f4f8;
+        padding: 15px;
+        border-left: 5px solid #1f77b4;
+        margin: 10px 0;
+        border-radius: 5px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# LegalBench Task Categories adapted for Rimon's matter-based classification
+LEGALBENCH_TASKS = {
+    # CONTRACT ANALYSIS & REVIEW (High automation 85-95%)
+    'Contract-Clause-Identification': {
+        'description': 'Identifying and extracting specific contract clauses',
+        'automation_potential': 0.92,
+        'keywords': ['contract', 'agreement', 'lease', 'license', 'licensing', 'amendment',
+                    'addendum', 'nda', 'msa', 'sla', 'consulting agreement', 'service agreement',
+                    'vendor', 'supplier', 'procurement', 'terms', 'clause review'],
+        'examples': ['Contract review', 'Lease agreements', 'Service agreements']
+    },
+    
+    # M&A AND CORPORATE (Medium-High automation 75-90%)
+    'MA-Deal-Terms': {
+        'description': 'M&A deal terms analysis and acquisition matters',
+        'automation_potential': 0.82,
+        'keywords': ['acquisition', 'merger', 'buyout', 'purchase', 'sale', 'transaction',
+                    'm&a', 'due diligence', 'closing', 'earnout', 'escrow', 'indemnit',
+                    'representation and warrant', 'definitive agreement'],
+        'examples': ['M&A transactions', 'Acquisitions', 'Corporate sales']
+    },
+    'Corporate-Governance': {
+        'description': 'Corporate governance, formation, and general corporate matters',
+        'automation_potential': 0.80,
+        'keywords': ['general corporate', 'corporate matters', 'corporate governance', 
+                    'formation', 'incorporation', 'llc', 'corporation', 'bylaws', 
+                    'operating agreement', 'shareholder', 'board', 'director', 'officer',
+                    'corporate advice', 'general representation', 'retainer',
+                    'corporate counsel', 'spv', 'entity'],
+        'examples': ['Corporate formation', 'General corporate counsel', 'Entity structuring']
+    },
+    'Securities-Compliance': {
+        'description': 'Securities matters and compliance',
+        'automation_potential': 0.78,
+        'keywords': ['securities', 'sec', 'offering', 'private placement', 'regulation d',
+                    'stock', 'equity', 'financing', 'investment', 'fund', 'investor'],
+        'examples': ['Securities filings', 'Private placements', 'Fund matters']
+    },
+    
+    # LITIGATION & PROCEDURE (Medium automation 70-85%)
+    'Litigation-Matters': {
+        'description': 'Litigation, disputes, and court proceedings',
+        'automation_potential': 0.75,
+        'keywords': [' v ', ' v. ', ' vs ', ' vs. ', ' versus ', 'litigation', 'lawsuit',
+                    'complaint', 'dispute', 'arbitration', 'mediation', 'trial', 'hearing',
+                    'motion', 'discovery', 'deposition', 'settlement', 'judgment',
+                    'appeal', 'court', 'plaintiff', 'defendant'],
+        'examples': ['Civil litigation', 'Commercial disputes', 'Court proceedings']
+    },
+    'Bankruptcy-Receivership': {
+        'description': 'Bankruptcy and receivership matters',
+        'automation_potential': 0.73,
+        'keywords': ['bankruptcy', 'chapter 11', 'chapter 7', 'receiver', 'receivership',
+                    'creditor', 'debtor', 'insolvency', 'reorganization', 'liquidation'],
+        'examples': ['Bankruptcy proceedings', 'Receivership matters', 'Creditor rights']
+    },
+    
+    # EMPLOYMENT & HR (Medium-High automation 75-85%)
+    'Employment-Law': {
+        'description': 'Employment contracts, disputes, and HR matters',
+        'automation_potential': 0.80,
+        'keywords': ['employment', 'employee', 'hr ', 'human resources', 'labor',
+                    'termination', 'severance', 'discrimination', 'harassment',
+                    'wage', 'compensation', 'benefits', 'non-compete', 'restrictive covenant',
+                    'wrongful termination', 'employment agreement'],
+        'examples': ['Employment agreements', 'HR compliance', 'Wrongful termination']
+    },
+    
+    # REAL ESTATE (Medium automation 70-80%)
+    'Real-Estate': {
+        'description': 'Real estate transactions and property matters',
+        'automation_potential': 0.75,
+        'keywords': ['real estate', 'property', 'lease', 'landlord', 'tenant', 'rental',
+                    'commercial lease', 'retail lease', 'office lease', 'title',
+                    'escrow', 'deed', 'mortgage', 'foreclosure', 'easement', 'zoning'],
+        'examples': ['Lease negotiations', 'Property acquisitions', 'Real estate closings']
+    },
+    
+    # INTELLECTUAL PROPERTY (High automation 85-90%)
+    'Intellectual-Property': {
+        'description': 'IP matters including patents, trademarks, and copyrights',
+        'automation_potential': 0.85,
+        'keywords': ['patent', 'trademark', 'copyright', 'intellectual property', ' ip ',
+                    'infringement', 'licensing', 'royalty', 'trade secret', 'confidential',
+                    'epo', 'uspto', 'office action', 'prosecution', 'portfolio'],
+        'examples': ['Patent prosecution', 'Trademark filing', 'IP licensing']
+    },
+    
+    # ESTATE PLANNING & TRUSTS (High automation 80-90%)
+    'Estate-Planning': {
+        'description': 'Estate planning, wills, trusts, and probate',
+        'automation_potential': 0.88,
+        'keywords': ['estate planning', 'estate', 'trust', 'will', 'probate',
+                    'trustee', 'beneficiary', 'inheritance', 'succession', 'gift',
+                    'estate tax', 'generation skipping', 'living trust', 'testamentary',
+                    'administration', 'executor', 'fiduciary'],
+        'examples': ['Estate planning', 'Trust administration', 'Will preparation']
+    },
+    
+    # FAMILY LAW (Medium automation 65-75%)
+    'Family-Law': {
+        'description': 'Divorce, custody, and family law matters',
+        'automation_potential': 0.68,
+        'keywords': ['divorce', 'dissolution', 'marriage', 'custody', 'child support',
+                    'alimony', 'spousal support', 'marital', 'family law', 'prenup',
+                    'postnup', 'separation', 'domestic', 'parenting', 'visitation'],
+        'examples': ['Divorce proceedings', 'Custody matters', 'Support calculations']
+    },
+    
+    # TAX (Medium automation 70-80%)
+    'Tax-Law': {
+        'description': 'Tax planning, compliance, and disputes',
+        'automation_potential': 0.75,
+        'keywords': ['tax', 'irs', 'taxation', 'tax planning', 'tax compliance',
+                    'tax return', 'audit', 'tax dispute', 'tax opinion', 'tax structure'],
+        'examples': ['Tax planning', 'IRS disputes', 'Tax compliance']
+    },
+    
+    # IMMIGRATION (Medium automation 70-80%)
+    'Immigration-Law': {
+        'description': 'Immigration and visa matters',
+        'automation_potential': 0.78,
+        'keywords': ['immigration', 'visa', 'h-1b', 'green card', 'citizenship',
+                    'naturalization', 'deportation', 'asylum', 'refugee', 'work permit',
+                    'uscis', 'ice', 'border', 'immigrant'],
+        'examples': ['Visa applications', 'Immigration compliance', 'Citizenship matters']
+    },
+    
+    # REGULATORY & COMPLIANCE (High automation 80-90%)
+    'Regulatory-Compliance': {
+        'description': 'Regulatory compliance and government affairs',
+        'automation_potential': 0.83,
+        'keywords': ['regulatory', 'compliance', 'regulation', 'permit', 'license',
+                    'government', 'agency', 'fda', 'epa', 'osha', 'ftc', 'fcc',
+                    'administrative', 'rulemaking', 'enforcement', 'investigation'],
+        'examples': ['Regulatory compliance', 'Government permits', 'Agency matters']
+    },
+    
+    # CANNABIS (Medium automation 70-80%)
+    'Cannabis-Law': {
+        'description': 'Cannabis industry legal matters',
+        'automation_potential': 0.72,
+        'keywords': ['cannabis', 'marijuana', 'dispensary', 'cultivation', 'cbd',
+                    'thc', 'hemp', 'marijuana license', 'cannabis license'],
+        'examples': ['Cannabis licensing', 'Dispensary operations', 'Cannabis compliance']
+    },
+    
+    # HEALTHCARE (Medium automation 70-80%)
+    'Healthcare-Law': {
+        'description': 'Healthcare and medical law matters',
+        'automation_potential': 0.74,
+        'keywords': ['healthcare', 'medical', 'hospital', 'physician', 'hipaa',
+                    'health insurance', 'medicare', 'medicaid', 'pharmaceutical'],
+        'examples': ['Healthcare compliance', 'Medical practice matters', 'HIPAA compliance']
+    },
+    
+    # ADMINISTRATIVE & ROUTINE (Very High automation 90-95%)
+    'General-Matters': {
+        'description': 'General advice, consultation, and miscellaneous matters',
+        'automation_potential': 0.65,
+        'keywords': ['general matters', 'general', 'advice', 'counsel', 'consultation',
+                    'miscellaneous', 'various', 'other'],
+        'examples': ['General advice', 'Consultations', 'Miscellaneous matters']
+    },
+    
+    # INTERNAL TIME (0% automation - not client work)
+    'Internal-Time': {
+        'description': 'Internal firm time - administrative and non-billable',
+        'automation_potential': 0.00,
+        'keywords': ['internal time', 'internal', 'admin', 'administrative', 'training',
+                    'business development', 'marketing', 'firm', 'vacation', 'pto',
+                    'sick', 'holiday'],
+        'examples': ['Internal meetings', 'Training', 'Administrative tasks']
+    }
+}
+
+# Rimon-specific OLI Benchmark
+RIMON_OLI_BENCHMARK = {
+    '100% AI Replaceable - Routine Corporate & Documents': {
+        'automation_potential': 1.00,
+        'keywords': [
+            'general corporate', 'corporate matters', 'general representation',
+            'retainer', 'general matters', 'general', 'advice and counsel',
+            'corporate advice', 'general corporate advice'
+        ],
+        'description': 'Routine corporate counsel and document review',
+        'examples': ['General corporate matters', 'Routine advice', 'Document review']
+    },
+    '100% AI Replaceable - Estate Planning': {
+        'automation_potential': 1.00,
+        'keywords': [
+            'estate planning', 'estate', 'trust', 'will', 'probate',
+            'trust administration'
+        ],
+        'description': 'Estate planning documents and trust administration - highly templated',
+        'examples': ['Estate planning', 'Trust documents', 'Will preparation']
+    },
+    '70% AI Replaceable - Transactional Work': {
+        'automation_potential': 0.70,
+        'keywords': [
+            'acquisition', 'merger', 'purchase', 'sale', 'transaction',
+            'financing', 'investment', 'fund', 'securities',
+            'lease', 'real estate', 'property'
+        ],
+        'description': 'M&A, financing, and complex transactional work',
+        'examples': ['Acquisitions', 'Financings', 'Real estate transactions']
+    },
+    '70% AI Replaceable - IP & Regulatory': {
+        'automation_potential': 0.70,
+        'keywords': [
+            'patent', 'trademark', 'copyright', 'intellectual property',
+            'regulatory', 'compliance', 'permit', 'license',
+            'immigration', 'visa'
+        ],
+        'description': 'IP prosecution and regulatory compliance',
+        'examples': ['Patent filings', 'Trademark prosecution', 'Regulatory compliance']
+    },
+    '30% AI Replaceable - Litigation & Complex Matters': {
+        'automation_potential': 0.30,
+        'keywords': [
+            ' v ', ' v. ', ' vs ', ' vs. ', 'litigation', 'lawsuit', 'dispute',
+            'arbitration', 'trial', 'court', 'motion', 'discovery',
+            'bankruptcy', 'receiver', 'settlement'
+        ],
+        'description': 'Litigation and complex disputes requiring significant judgment',
+        'examples': ['Civil litigation', 'Arbitrations', 'Court proceedings']
+    },
+    '30% AI Replaceable - Employment & Family Law': {
+        'automation_potential': 0.30,
+        'keywords': [
+            'employment', 'hr ', 'labor', 'termination',
+            'divorce', 'dissolution', 'custody', 'family law',
+            'tax'
+        ],
+        'description': 'Matters requiring nuanced human judgment and counseling',
+        'examples': ['Employment disputes', 'Divorce matters', 'Tax planning']
+    },
+    '0% AI Replaceable - Internal & Strategic': {
+        'automation_potential': 0.00,
+        'keywords': [
+            'internal time', 'vacation', 'pto', 'holiday', 'training',
+            'business development', 'marketing', 'admin'
+        ],
+        'description': 'Internal time and strategic work',
+        'examples': ['Internal meetings', 'Business development', 'Training']
+    }
+}
+
+def classify_matter_legalbench(matter_name):
+    """Classify a matter using LegalBench framework"""
+    if pd.isna(matter_name):
+        return 'General-Matters', 0.65
+    
+    matter_lower = matter_name.lower()
+    
+    # Score each category
+    scores = {}
+    for category, info in LEGALBENCH_TASKS.items():
+        score = sum(1 for keyword in info['keywords'] if keyword in matter_lower)
+        if score > 0:
+            scores[category] = score
+    
+    if scores:
+        best_category = max(scores, key=scores.get)
+        automation_potential = LEGALBENCH_TASKS[best_category]['automation_potential']
+        return best_category, automation_potential
+    else:
+        return 'General-Matters', 0.65
+
+def classify_matter_oli(matter_name):
+    """Classify a matter using Rimon OLI Benchmark"""
+    if pd.isna(matter_name):
+        return 'Unclassified', 0.0
+    
+    matter_lower = matter_name.lower()
+    
+    # Check for internal time first (0% automation)
+    if 'internal time' in matter_lower or 'vacation' in matter_lower:
+        return '0% AI Replaceable - Internal & Strategic', 0.0
+    
+    # Score each category
+    scores = {}
+    for category, info in RIMON_OLI_BENCHMARK.items():
+        if category == '0% AI Replaceable - Internal & Strategic':
+            continue
+        score = sum(1 for keyword in info['keywords'] if keyword in matter_lower)
+        if score > 0:
+            scores[category] = score
+    
+    if scores:
+        best_category = max(scores, key=scores.get)
+        automation_potential = RIMON_OLI_BENCHMARK[best_category]['automation_potential']
+        return best_category, automation_potential
+    else:
+        return 'Unclassified', 0.0
+
+@st.cache_data
+def load_data(csv_path):
+    """Load and preprocess the Rimon CSV data"""
+    # Skip first 2 header rows
+    df = pd.read_csv(csv_path, skiprows=2, encoding='utf-8-sig')
+    
+    # Convert date to datetime
+    df['Date of Work'] = pd.to_datetime(df['Date of Work'], format='%m/%d/%Y', errors='coerce')
+    
+    # Convert hours to numeric
+    df['Billable Hours'] = pd.to_numeric(df['Billable Hours'], errors='coerce')
+    
+    # Fill NaN hours with 0
+    df['Billable Hours'] = df['Billable Hours'].fillna(0)
+    
+    # Extract year, month, quarter
+    df['Year'] = df['Date of Work'].dt.year
+    df['Month'] = df['Date of Work'].dt.month
+    df['Month_Name'] = df['Date of Work'].dt.strftime('%B')
+    df['Quarter'] = df['Date of Work'].dt.quarter
+    
+    # Fill NaN in Matter Name with 'Unknown'
+    df['Matter Name'] = df['Matter Name'].fillna('Unknown')
+    
+    return df
+
+def extract_keywords(matter_names):
+    """Extract common keywords from matter names"""
+    all_words = []
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
+                  'of', 'with', 're', 'from', 'by', 'as', 'is', 'was', 'be', 'been',
+                  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+                  'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those',
+                  'llc', 'inc', 'corp', 'ltd', 'vs', 'v'}
+    
+    for matter in matter_names:
+        if pd.notna(matter):
+            words = re.findall(r'\b[a-z]{4,}\b', matter.lower())
+            all_words.extend([w for w in words if w not in stop_words])
+    
+    return Counter(all_words).most_common(30)
+
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == "RimonAI2025":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.markdown('<h1 class="main-header">⚖️ Rimon Legal AI Automation Dashboard</h1>', unsafe_allow_html=True)
+        st.markdown("### 🔐 Secure Access Required")
+        st.markdown("---")
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.text_input(
+                "Enter Password", 
+                type="password", 
+                on_change=password_entered, 
+                key="password",
+                help="Contact your administrator for access"
+            )
+            st.info("💡 This dashboard contains confidential firm data and automation analysis.")
+        return False
+    
+    elif not st.session_state["password_correct"]:
+        st.markdown('<h1 class="main-header">⚖️ Rimon Legal AI Automation Dashboard</h1>', unsafe_allow_html=True)
+        st.markdown("### 🔐 Secure Access Required")
+        st.markdown("---")
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.text_input(
+                "Enter Password", 
+                type="password", 
+                on_change=password_entered, 
+                key="password",
+                help="Contact your administrator for access"
+            )
+            st.error("❌ Incorrect password. Please try again.")
+        return False
+    
+    else:
+        return True
+
+def main():
+    # Check password first
+    if not check_password():
+        return
+    
+    st.markdown('<h1 class="main-header">⚖️ Rimon Legal AI Automation Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown("### Rimon P.C. - AI-Powered Efficiency Analysis (Jan-Oct 2025)")
+    
+    # Sidebar with logout option
+    st.sidebar.title("📊 Dashboard Controls")
+    
+    if st.sidebar.button("🚪 Logout", help="Log out of the dashboard"):
+        st.session_state["password_correct"] = False
+        st.rerun()
+    
+    st.sidebar.markdown("---")
+    
+    # Load data
+    try:
+        csv_path = '/mnt/user-data/uploads/2025_Jan-Oct_time_entry_export.csv'
+        df = load_data(csv_path)
+        
+        # Handle flat fee entries - count as 1 hour for analysis
+        df['Original_Hours'] = df['Billable Hours'].copy()
+        df.loc[df['Rate Type'] == 'Flat Fee', 'Billable Hours'] = 1.0
+        
+        st.sidebar.success(f"✅ Loaded {len(df):,} time entries")
+        
+        flat_fee_count = (df['Rate Type'] == 'Flat Fee').sum()
+        if flat_fee_count > 0:
+            st.sidebar.info(f"ℹ️ {flat_fee_count:,} flat fee entries counted as 1 hour each")
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return
+    
+    # Filters
+    st.sidebar.subheader("🔍 Filters")
+    
+    # Year filter
+    years = sorted(df['Year'].dropna().unique())
+    selected_years = st.sidebar.multiselect("Select Years", years, default=years)
+    
+    # User filter
+    users = sorted(df['User Name'].dropna().unique())
+    selected_users = st.sidebar.multiselect("Select Users", users, default=[])
+    
+    # Apply filters
+    filtered_df = df[df['Year'].isin(selected_years)]
+    if selected_users:
+        filtered_df = filtered_df[filtered_df['User Name'].isin(selected_users)]
+    
+    # Classify tasks
+    with st.spinner("🤖 Analyzing matters for AI automation potential..."):
+        filtered_df[['Task_Category', 'Automation_Potential']] = filtered_df['Matter Name'].apply(
+            lambda x: pd.Series(classify_matter_legalbench(x))
+        )
+    
+    # Calculate automation hours
+    filtered_df['Automatable_Hours'] = filtered_df['Billable Hours'] * filtered_df['Automation_Potential']
+    filtered_df['Manual_Hours'] = filtered_df['Billable Hours'] - filtered_df['Automatable_Hours']
+    
+    # Main tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📈 Overview (LegalBench)", 
+        "🎯 Rimon Benchmark",
+        "💰 Cost Savings", 
+        "🔮 Predictions",
+        "📚 Category Definitions"
+    ])
+    
+    # TAB 1: Overview
+    with tab1:
+        st.header("Overview Dashboard")
+        
+        st.markdown("""
+        ### 🎯 Understanding AI Automation Potential
+        This analysis is based on the **LegalBench framework** adapted for Rimon's matter-based time entries. 
+        Each matter type has been assigned an automation potential based on current AI capabilities.
+        
+        **Note:** *Flat fee entries are counted as 1 hour for analysis purposes. Analysis based on Jan-Oct 2025 data.*
+        """)
+        
+        with st.expander("📊 **How We Calculate Your Automation Potential**", expanded=False):
+            st.markdown("""
+            #### Calculation Methodology
+            
+            **Step 1: Matter Classification**
+            - We analyze each time entry's "Matter Name"
+            - Match matters to one of 16 legal practice area categories
+            - Examples: Estate Planning, M&A, Litigation, Corporate Governance, etc.
+            
+            **Step 2: Apply Automation Potential**
+            - Each category has researched automation potential (0%-92%)
+            - Based on LegalBench research and current AI capabilities
+            - Higher % = more suitable for AI assistance
+            
+            **Step 3: Calculate Automatable Hours**
+            ```
+            Automatable Hours = Total Hours × Automation Potential %
+            
+            Example:
+            • Matter Type: Estate Planning (88% automation potential)
+            • Time Spent: 100 hours
+            • Automatable: 100 × 0.88 = 88 hours
+            • Manual Oversight: 12 hours
+            ```
+            
+            #### 🤖 What Makes Hours "Automatable"?
+            
+            **High Automation (80-92%):**
+            - ✅ Estate planning documents (88%)
+            - ✅ Intellectual property prosecution (85%)
+            - ✅ Regulatory compliance (83%)
+            - ✅ Contract review and drafting (92%)
+            - ✅ Corporate governance documents (80%)
+            
+            **Medium Automation (65-80%):**
+            - ⚠️ M&A transactions (82%)
+            - ⚠️ Employment law (80%)
+            - ⚠️ Immigration matters (78%)
+            - ⚠️ Tax planning (75%)
+            - ⚠️ Real estate (75%)
+            
+            **Lower Automation (0-70%):**
+            - ⛔ Litigation and disputes (75%)
+            - ⛔ Family law (68%)
+            - ⛔ General advice (65%)
+            - ⛔ Internal time (0%)
+            """)
+        
+        st.markdown("---")
+        
+        # Key metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        total_hours = filtered_df['Billable Hours'].sum()
+        automatable_hours = filtered_df['Automatable_Hours'].sum()
+        automation_rate = (automatable_hours / total_hours * 100) if total_hours > 0 else 0
+        
+        with col1:
+            st.metric(
+                label="Total Billable Hours",
+                value=f"{total_hours:,.0f}",
+                delta=None
+            )
+        
+        with col2:
+            st.metric(
+                label="AI-Automatable Hours",
+                value=f"{automatable_hours:,.0f}",
+                delta=f"{automation_rate:.1f}% of total",
+                help="Hours that could be accelerated with AI assistance"
+            )
+        
+        with col3:
+            total_billable = filtered_df['Billable Amount'].sum()
+            st.metric(
+                label="Total Billable Amount",
+                value=f"${total_billable:,.0f}"
+            )
+        
+        with col4:
+            unique_matters = filtered_df['Matter ID'].nunique()
+            st.metric(
+                label="Unique Matters",
+                value=f"{unique_matters:,}"
+            )
+        
+        st.markdown("---")
+        
+        # Monthly trend visualization
+        st.subheader("💰 Monthly Work Distribution: AI-Automatable vs. Human-Required")
+        
+        col1, col2 = st.columns([3, 2])
+        
+        with col1:
+            monthly_data = filtered_df.groupby(['Year', 'Month', 'Month_Name']).agg({
+                'Billable Hours': 'sum',
+                'Automatable_Hours': 'sum',
+                'Manual_Hours': 'sum'
+            }).reset_index()
+            monthly_data = monthly_data.sort_values(['Year', 'Month'])
+            monthly_data['Period'] = monthly_data['Month_Name'] + ' ' + monthly_data['Year'].astype(str)
+            
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=monthly_data['Period'],
+                y=monthly_data['Automatable_Hours'],
+                name='AI-Automatable',
+                mode='lines',
+                line=dict(width=0.5, color='rgb(34, 139, 34)'),
+                stackgroup='one',
+                fillcolor='rgba(34, 139, 34, 0.6)',
+                hovertemplate='%{y:.0f} automatable hours<extra></extra>'
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=monthly_data['Period'],
+                y=monthly_data['Manual_Hours'],
+                name='Human-Required',
+                mode='lines',
+                line=dict(width=0.5, color='rgb(255, 140, 0)'),
+                stackgroup='one',
+                fillcolor='rgba(255, 140, 0, 0.6)',
+                hovertemplate='%{y:.0f} manual hours<extra></extra>'
+            ))
+            
+            fig.update_layout(
+                title='Monthly Hours: AI-Automatable vs. Human-Required',
+                xaxis_title='Month',
+                yaxis_title='Hours',
+                height=400,
+                hovermode='x unified',
+                showlegend=True
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            fig = go.Figure(data=[go.Pie(
+                labels=['AI-Automatable Hours', 'Human-Required Hours'],
+                values=[automatable_hours, total_hours - automatable_hours],
+                hole=0.5,
+                marker_colors=['#228B22', '#FF8C00'],
+                textinfo='label+percent',
+                textposition='outside'
+            )])
+            
+            fig.update_layout(
+                title='Overall Work Distribution',
+                height=400,
+                showlegend=False,
+                annotations=[dict(
+                    text=f'{automation_rate:.1f}%<br>Automatable',
+                    x=0.5, y=0.5,
+                    font_size=20,
+                    showarrow=False
+                )]
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Top automation opportunities
+        st.subheader("📊 Top Automation Opportunities by Practice Area")
+        
+        category_data = filtered_df[filtered_df['Task_Category'] != 'Internal-Time'].groupby('Task_Category').agg({
+            'Billable Hours': 'sum',
+            'Automatable_Hours': 'sum',
+            'Automation_Potential': 'first'
+        }).reset_index()
+        category_data = category_data.sort_values('Automatable_Hours', ascending=False).head(12)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig = px.bar(
+                category_data,
+                x='Automatable_Hours',
+                y='Task_Category',
+                orientation='h',
+                title='Top 12 Practice Areas by AI-Automatable Hours',
+                labels={'Automatable_Hours': 'AI-Automatable Hours', 'Task_Category': 'Practice Area'},
+                color='Automation_Potential',
+                color_continuous_scale='Greens',
+                text='Automatable_Hours'
+            )
+            
+            fig.update_traces(
+                texttemplate='%{text:.0f}h',
+                textposition='outside'
+            )
+            
+            fig.update_layout(
+                height=500,
+                yaxis={'categoryorder': 'total ascending'},
+                xaxis_title='Hours',
+                coloraxis_colorbar=dict(title="Automation<br>Potential")
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            category_data['Potential_Savings_Pct'] = category_data['Automation_Potential'] * 100
+            
+            fig = go.Figure()
+            
+            fig.add_trace(go.Bar(
+                y=category_data['Task_Category'],
+                x=category_data['Billable Hours'],
+                name='Total Hours',
+                orientation='h',
+                marker_color='lightblue',
+                text=category_data['Billable Hours'].round(0),
+                textposition='inside'
+            ))
+            
+            fig.update_layout(
+                title='Total Hours by Practice Area<br><sub>Darker green = higher automation potential</sub>',
+                xaxis_title='Hours',
+                yaxis_title='',
+                height=500,
+                yaxis={'categoryorder': 'total ascending'},
+                showlegend=False
+            )
+            
+            colors = category_data['Automation_Potential'].apply(
+                lambda x: f'rgba(34, 139, 34, {x})' if x > 0.8 else 
+                         f'rgba(255, 165, 0, {x})' if x > 0.7 else 
+                         f'rgba(255, 99, 71, {x})'
+            )
+            fig.data[0].marker.color = colors
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # User analysis
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("👥 Top 15 Users by Hours")
+            user_hours = filtered_df.groupby('User Name').agg({
+                'Billable Hours': 'sum',
+                'Automatable_Hours': 'sum'
+            }).reset_index().sort_values('Billable Hours', ascending=False).head(15)
+            
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                y=user_hours['User Name'],
+                x=user_hours['Billable Hours'],
+                name='Total Hours',
+                orientation='h',
+                marker_color='lightcoral'
+            ))
+            fig.add_trace(go.Bar(
+                y=user_hours['User Name'],
+                x=user_hours['Automatable_Hours'],
+                name='AI-Automatable',
+                orientation='h',
+                marker_color='darkred'
+            ))
+            fig.update_layout(
+                barmode='overlay',
+                height=500,
+                hovermode='y unified'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.subheader("📈 Top 15 Matters by Hours")
+            matter_hours = filtered_df.groupby('Matter Name').agg({
+                'Billable Hours': 'sum',
+                'Automatable_Hours': 'sum'
+            }).reset_index().sort_values('Billable Hours', ascending=False).head(15)
+            
+            fig = px.bar(
+                matter_hours,
+                x='Billable Hours',
+                y='Matter Name',
+                orientation='h',
+                title='',
+                color='Automatable_Hours',
+                color_continuous_scale='Blues'
+            )
+            fig.update_layout(
+                height=500,
+                yaxis={'categoryorder': 'total ascending'}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Key insights
+        st.markdown("---")
+        st.subheader("💡 Key Insights")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.info(f"""
+            **🤖 AI Could Assist With:**
+            - {automatable_hours:,.0f} hours ({automation_rate:.1f}%)
+            - Equivalent to {automatable_hours/40:.0f} work weeks
+            - Or {automatable_hours/2080:.1f} full-time employees
+            """)
+        
+        with col2:
+            avg_automation = filtered_df['Automation_Potential'].mean() * 100
+            st.success(f"""
+            **📈 Average Matter Automation:**
+            - {avg_automation:.1f}% automation potential
+            - Based on {len(filtered_df):,} time entries
+            - Across {unique_matters:,} matters
+            """)
+        
+        with col3:
+            if len(category_data) > 0:
+                top_category = category_data.iloc[0]
+                st.warning(f"""
+                **🎯 Top Opportunity:**
+                - **{top_category['Task_Category']}**
+                - {top_category['Automatable_Hours']:.0f} automatable hours
+                - {top_category['Automation_Potential']*100:.0f}% automation potential
+                """)
+    
+    # TAB 2: Rimon Benchmark
+    with tab2:
+        st.header("🎯 Rimon Benchmark - Custom Practice Area Analysis")
+        
+        st.markdown("""
+        ### 📊 Rimon's AI Automation Assessment
+        This tab uses **Rimon Benchmark** - a custom assessment tailored to Rimon's specific 
+        practice areas and matter types.
+        
+        **Note:** *Flat fee entries are counted as 1 hour for analysis purposes.*
+        """)
+        
+        # Classify using Rimon OLI
+        with st.spinner("🤖 Analyzing using Rimon Benchmark..."):
+            filtered_df[['OLI_Category', 'OLI_Automation_Potential']] = filtered_df['Matter Name'].apply(
+                lambda x: pd.Series(classify_matter_oli(x))
+            )
+        
+        filtered_df['OLI_Automatable_Hours'] = filtered_df['Billable Hours'] * filtered_df['OLI_Automation_Potential']
+        filtered_df['OLI_Manual_Hours'] = filtered_df['Billable Hours'] - filtered_df['OLI_Automatable_Hours']
+        
+        with st.expander("📋 **Rimon Benchmark Categories**", expanded=False):
+            st.markdown("""
+            ### Rimon Benchmark Classification
+            
+            #### 🟢 100% Automatable (Two Categories)
+            
+            **1. Routine Corporate & Documents:**
+            - General Corporate Matters
+            - General Representation
+            - Retainer Services
+            - Corporate Advice
+            
+            **2. Estate Planning:**
+            - Estate Planning
+            - Trust Administration
+            - Wills & Probate
+            
+            #### 🟡 70% Automatable (Two Categories)
+            
+            **1. Transactional Work:**
+            - M&A & Acquisitions
+            - Financings & Investments
+            - Real Estate Transactions
+            - Securities Matters
+            
+            **2. IP & Regulatory:**
+            - Patent & Trademark Prosecution
+            - Regulatory Compliance
+            - Immigration Matters
+            
+            #### 🟠 30% Automatable (Two Categories)
+            
+            **1. Litigation & Complex:**
+            - Civil Litigation
+            - Arbitration & Mediation
+            - Bankruptcy
+            
+            **2. Employment & Family:**
+            - Employment Disputes
+            - Family Law Matters
+            - Tax Planning
+            
+            #### ⚫ 0% Automatable
+            **Internal & Strategic:**
+            - Internal Time
+            - Business Development
+            - Training
+            """)
+        
+        st.markdown("---")
+        
+        # Rimon metrics
+        st.subheader("📈 Rimon Benchmark Metrics")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        oli_total = filtered_df['Billable Hours'].sum()
+        oli_automatable = filtered_df['OLI_Automatable_Hours'].sum()
+        oli_rate = (oli_automatable / oli_total * 100) if oli_total > 0 else 0
+        oli_manual = filtered_df['OLI_Manual_Hours'].sum()
+        
+        with col1:
+            st.metric(
+                label="Total Hours",
+                value=f"{oli_total:,.0f}"
+            )
+        
+        with col2:
+            st.metric(
+                label="Rimon AI-Automatable",
+                value=f"{oli_automatable:,.0f}",
+                delta=f"{oli_rate:.1f}% of total"
+            )
+        
+        with col3:
+            st.metric(
+                label="Human-Required",
+                value=f"{oli_manual:,.0f}",
+                delta=f"{(oli_manual/oli_total*100):.1f}%",
+                delta_color="inverse"
+            )
+        
+        with col4:
+            potential_savings = oli_automatable * 0.60 * 500
+            st.metric(
+                label="Potential Savings (Est.)",
+                value=f"${potential_savings:,.0f}",
+                help="At 60% efficiency, $500/hour"
+            )
+        
+        st.markdown("---")
+        
+        # Rimon visualization
+        st.subheader("💰 Rimon Benchmark Distribution")
+        
+        col1, col2 = st.columns([3, 2])
+        
+        with col1:
+            oli_monthly = filtered_df.groupby(['Year', 'Month', 'Month_Name']).agg({
+                'Billable Hours': 'sum',
+                'OLI_Automatable_Hours': 'sum',
+                'OLI_Manual_Hours': 'sum'
+            }).reset_index()
+            oli_monthly = oli_monthly.sort_values(['Year', 'Month'])
+            oli_monthly['Period'] = oli_monthly['Month_Name'] + ' ' + oli_monthly['Year'].astype(str)
+            
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=oli_monthly['Period'],
+                y=oli_monthly['OLI_Automatable_Hours'],
+                name='AI-Automatable',
+                mode='lines',
+                line=dict(width=0.5, color='rgb(0, 128, 0)'),
+                stackgroup='one',
+                fillcolor='rgba(0, 128, 0, 0.7)'
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=oli_monthly['Period'],
+                y=oli_monthly['OLI_Manual_Hours'],
+                name='Human-Required',
+                mode='lines',
+                line=dict(width=0.5, color='rgb(220, 20, 60)'),
+                stackgroup='one',
+                fillcolor='rgba(220, 20, 60, 0.7)'
+            ))
+            
+            fig.update_layout(
+                title='Rimon Benchmark: Monthly Distribution',
+                height=400,
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            fig = go.Figure(data=[go.Pie(
+                labels=['AI-Automatable', 'Human-Required'],
+                values=[oli_automatable, oli_manual],
+                hole=0.5,
+                marker_colors=['#008000', '#DC143C']
+            )])
+            
+            fig.update_layout(
+                title='Overall Distribution',
+                height=400,
+                annotations=[dict(
+                    text=f'{oli_rate:.1f}%<br>Automatable',
+                    x=0.5, y=0.5,
+                    font_size=20,
+                    showarrow=False
+                )]
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Category breakdown
+        st.subheader("📊 Hours by Rimon Automation Tier")
+        
+        oli_categories = filtered_df[filtered_df['OLI_Category'] != 'Unclassified'].groupby('OLI_Category').agg({
+            'Billable Hours': 'sum',
+            'OLI_Automatable_Hours': 'sum',
+            'OLI_Automation_Potential': 'first'
+        }).reset_index()
+        oli_categories = oli_categories.sort_values('OLI_Automation_Potential', ascending=False)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig = go.Figure()
+            
+            fig.add_trace(go.Bar(
+                y=oli_categories['OLI_Category'],
+                x=oli_categories['Billable Hours'],
+                name='Total',
+                orientation='h',
+                marker_color='lightblue'
+            ))
+            
+            fig.add_trace(go.Bar(
+                y=oli_categories['OLI_Category'],
+                x=oli_categories['OLI_Automatable_Hours'],
+                name='Automatable',
+                orientation='h',
+                marker_color='darkgreen'
+            ))
+            
+            fig.update_layout(
+                title='Hours by Rimon Category',
+                height=450,
+                barmode='overlay'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            fig = px.bar(
+                oli_categories,
+                y='OLI_Category',
+                x='OLI_Automatable_Hours',
+                orientation='h',
+                title='Automatable Hours by Tier',
+                color='OLI_Automation_Potential',
+                color_continuous_scale='RdYlGn'
+            )
+            
+            fig.update_layout(height=450)
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Top matters
+        st.markdown("---")
+        st.subheader("🎯 Top Matters for AI Implementation")
+        
+        matter_analysis = filtered_df[filtered_df['OLI_Category'] != 'Unclassified'].groupby('Matter Name').agg({
+            'Billable Hours': 'sum',
+            'OLI_Automatable_Hours': 'sum'
+        }).reset_index()
+        matter_analysis['Automation_Rate'] = (
+            matter_analysis['OLI_Automatable_Hours'] / matter_analysis['Billable Hours'] * 100
+        )
+        matter_analysis = matter_analysis.sort_values('OLI_Automatable_Hours', ascending=False).head(20)
+        
+        st.dataframe(
+            matter_analysis.style.format({
+                'Billable Hours': '{:.1f}',
+                'OLI_Automatable_Hours': '{:.1f}',
+                'Automation_Rate': '{:.1f}%'
+            }).background_gradient(subset=['OLI_Automatable_Hours'], cmap='Greens'),
+            use_container_width=True,
+            height=500
+        )
+    
+    # TAB 3: Cost Savings
+    with tab3:
+        st.header("💰 Potential Cost Savings with AI")
+        
+        st.subheader("⚙️ Assumptions & Parameters")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            avg_hourly_rate = st.number_input(
+                "Average Hourly Rate ($)",
+                min_value=100,
+                max_value=1000,
+                value=500,
+                step=50
+            )
+        
+        with col2:
+            ai_efficiency_gain = st.slider(
+                "AI Efficiency Gain (%)",
+                min_value=10,
+                max_value=90,
+                value=60,
+                help="Percentage of time saved on automatable tasks"
+            ) / 100
+        
+        with col3:
+            ai_cost_per_hour = st.number_input(
+                "AI Cost per Hour ($)",
+                min_value=1,
+                max_value=100,
+                value=10,
+                step=5
+            )
+        
+        st.markdown("---")
+        
+        # Calculate savings
+        hours_saved = automatable_hours * ai_efficiency_gain
+        labor_saved = hours_saved * avg_hourly_rate
+        ai_cost = automatable_hours * ai_cost_per_hour
+        net_savings = labor_saved - ai_cost
+        roi = (net_savings / ai_cost * 100) if ai_cost > 0 else 0
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                label="Hours Potentially Saved",
+                value=f"{hours_saved:,.0f}",
+                delta=f"{(hours_saved/total_hours*100):.1f}% of total"
+            )
+        
+        with col2:
+            st.metric(
+                label="Labor Cost Savings",
+                value=f"${labor_saved:,.0f}"
+            )
+        
+        with col3:
+            st.metric(
+                label="AI Implementation Cost",
+                value=f"${ai_cost:,.0f}"
+            )
+        
+        with col4:
+            st.metric(
+                label="Net Savings",
+                value=f"${net_savings:,.0f}",
+                delta=f"ROI: {roi:.0f}%"
+            )
+        
+        st.markdown("---")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("💵 Savings by Practice Area")
+            
+            category_savings = filtered_df.groupby('Task_Category').agg({
+                'Automatable_Hours': 'sum'
+            }).reset_index()
+            
+            category_savings['Hours_Saved'] = category_savings['Automatable_Hours'] * ai_efficiency_gain
+            category_savings['Cost_Savings'] = category_savings['Hours_Saved'] * avg_hourly_rate
+            category_savings = category_savings.sort_values('Cost_Savings', ascending=False).head(12)
+            
+            fig = px.bar(
+                category_savings,
+                x='Task_Category',
+                y='Cost_Savings',
+                title='Potential Savings by Category',
+                color='Cost_Savings',
+                color_continuous_scale='Greens'
+            )
+            fig.update_layout(height=400, xaxis_tickangle=-45)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.subheader("📈 Cumulative Savings")
+            
+            monthly_savings = filtered_df.groupby(['Year', 'Month']).agg({
+                'Automatable_Hours': 'sum'
+            }).reset_index()
+            monthly_savings = monthly_savings.sort_values(['Year', 'Month'])
+            monthly_savings['Hours_Saved'] = monthly_savings['Automatable_Hours'] * ai_efficiency_gain
+            monthly_savings['Monthly_Savings'] = monthly_savings['Hours_Saved'] * avg_hourly_rate
+            monthly_savings['Cumulative_Savings'] = monthly_savings['Monthly_Savings'].cumsum()
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=monthly_savings.index,
+                y=monthly_savings['Cumulative_Savings'],
+                mode='lines+markers',
+                name='Cumulative',
+                fill='tozeroy',
+                line=dict(color='green', width=3)
+            ))
+            fig.update_layout(
+                title='Cumulative Cost Savings (Jan-Oct 2025)',
+                height=400
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # TAB 4: Predictions
+    with tab4:
+        st.header("🔮 2025 Full Year Projections")
+        
+        current_data = filtered_df[filtered_df['Year'] == 2025]
+        
+        if len(current_data) > 0:
+            latest_month = current_data['Month'].max()
+            
+            monthly_avg = current_data.groupby('Month').agg({
+                'Billable Hours': 'sum',
+                'Automatable_Hours': 'sum'
+            }).mean()
+            
+            months_elapsed = latest_month
+            months_remaining = 12 - months_elapsed
+            
+            projected_total = (current_data['Billable Hours'].sum() + 
+                              monthly_avg['Billable Hours'] * months_remaining)
+            projected_automatable = (current_data['Automatable_Hours'].sum() + 
+                                    monthly_avg['Automatable_Hours'] * months_remaining)
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric(
+                    label="Projected Total Hours (2025)",
+                    value=f"{projected_total:,.0f}",
+                    delta=f"+{months_remaining} months projected"
+                )
+            
+            with col2:
+                st.metric(
+                    label="Projected Automatable Hours",
+                    value=f"{projected_automatable:,.0f}",
+                    delta=f"{(projected_automatable/projected_total*100):.1f}%"
+                )
+            
+            with col3:
+                projected_savings = projected_automatable * ai_efficiency_gain * avg_hourly_rate
+                st.metric(
+                    label="Projected Annual Savings",
+                    value=f"${projected_savings:,.0f}"
+                )
+            
+            st.markdown("---")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📊 Monthly Projection")
+                
+                actual_monthly = current_data.groupby('Month').agg({
+                    'Billable Hours': 'sum',
+                    'Automatable_Hours': 'sum'
+                }).reset_index()
+                
+                all_months = pd.DataFrame({'Month': range(1, 13)})
+                projection_df = all_months.merge(actual_monthly, on='Month', how='left')
+                
+                projection_df['Billable Hours'] = projection_df['Billable Hours'].fillna(monthly_avg['Billable Hours'])
+                projection_df['Automatable_Hours'] = projection_df['Automatable_Hours'].fillna(
+                    monthly_avg['Automatable_Hours']
+                )
+                projection_df['Type'] = projection_df['Month'].apply(
+                    lambda x: 'Actual' if x <= months_elapsed else 'Projected'
+                )
+                
+                fig = go.Figure()
+                
+                actual = projection_df[projection_df['Type'] == 'Actual']
+                fig.add_trace(go.Bar(
+                    x=actual['Month'],
+                    y=actual['Billable Hours'],
+                    name='Actual Total',
+                    marker_color='lightblue'
+                ))
+                fig.add_trace(go.Bar(
+                    x=actual['Month'],
+                    y=actual['Automatable_Hours'],
+                    name='Actual Automatable',
+                    marker_color='darkblue'
+                ))
+                
+                projected = projection_df[projection_df['Type'] == 'Projected']
+                fig.add_trace(go.Bar(
+                    x=projected['Month'],
+                    y=projected['Billable Hours'],
+                    name='Projected Total',
+                    marker_color='lightcoral',
+                    opacity=0.6
+                ))
+                fig.add_trace(go.Bar(
+                    x=projected['Month'],
+                    y=projected['Automatable_Hours'],
+                    name='Projected Automatable',
+                    marker_color='darkred',
+                    opacity=0.6
+                ))
+                
+                fig.update_layout(
+                    title='2025 Monthly Hours Projection',
+                    barmode='group',
+                    height=400
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                st.subheader("💰 Cumulative Savings Projection")
+                
+                projection_df['Monthly_Savings'] = (
+                    projection_df['Automatable_Hours'] * ai_efficiency_gain * avg_hourly_rate
+                )
+                projection_df['Cumulative_Savings'] = projection_df['Monthly_Savings'].cumsum()
+                
+                fig = go.Figure()
+                
+                actual_cum = projection_df[projection_df['Type'] == 'Actual']
+                fig.add_trace(go.Scatter(
+                    x=actual_cum['Month'],
+                    y=actual_cum['Cumulative_Savings'],
+                    mode='lines+markers',
+                    name='Actual',
+                    line=dict(color='green', width=3),
+                    fill='tozeroy'
+                ))
+                
+                fig.add_trace(go.Scatter(
+                    x=projection_df['Month'],
+                    y=projection_df['Cumulative_Savings'],
+                    mode='lines+markers',
+                    name='Projected',
+                    line=dict(color='lightgreen', width=3, dash='dash'),
+                    fill='tozeroy',
+                    opacity=0.5
+                ))
+                
+                fig.update_layout(
+                    title='Cumulative Savings Projection',
+                    height=400
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Scenario analysis
+            st.markdown("---")
+            st.subheader("🎲 Scenario Analysis")
+            
+            scenarios = {
+                'Conservative (40% efficiency)': 0.40,
+                'Moderate (60% efficiency)': 0.60,
+                'Optimistic (80% efficiency)': 0.80
+            }
+            
+            scenario_results = []
+            for name, efficiency in scenarios.items():
+                h_saved = projected_automatable * efficiency
+                cost_saved = h_saved * avg_hourly_rate
+                ai_cost_total = projected_automatable * ai_cost_per_hour
+                net = cost_saved - ai_cost_total
+                
+                scenario_results.append({
+                    'Scenario': name,
+                    'Hours Saved': h_saved,
+                    'Cost Saved': cost_saved,
+                    'AI Cost': ai_cost_total,
+                    'Net Savings': net,
+                    'ROI (%)': (net / ai_cost_total * 100) if ai_cost_total > 0 else 0
+                })
+            
+            scenario_df = pd.DataFrame(scenario_results)
+            
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                fig = go.Figure()
+                
+                fig.add_trace(go.Bar(
+                    x=scenario_df['Scenario'],
+                    y=scenario_df['Net Savings'],
+                    marker_color='green',
+                    text=scenario_df['Net Savings'].apply(lambda x: f'${x:,.0f}'),
+                    textposition='auto'
+                ))
+                
+                fig.update_layout(
+                    title='Net Savings by Scenario',
+                    height=400
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                st.dataframe(
+                    scenario_df.style.format({
+                        'Hours Saved': '{:,.0f}',
+                        'Cost Saved': '${:,.0f}',
+                        'AI Cost': '${:,.0f}',
+                        'Net Savings': '${:,.0f}',
+                        'ROI (%)': '{:.0f}%'
+                    }),
+                    use_container_width=True,
+                    height=400
+                )
+        else:
+            st.warning("No 2025 data for projections")
+    
+    # TAB 5: Definitions
+    with tab5:
+        st.header("📚 LegalBench Practice Area Definitions")
+        
+        st.markdown("""
+        Based on the **LegalBench framework** adapted for Rimon's matter-based time tracking.
+        """)
+        
+        for category, info in LEGALBENCH_TASKS.items():
+            if category == 'Internal-Time':
+                continue
+            
+            with st.expander(f"**{category}** - Automation: {info['automation_potential']*100:.0f}%"):
+                st.markdown(f"**Description:** {info['description']}")
+                
+                st.markdown("**Keywords:**")
+                st.write(", ".join(info['keywords']))
+                
+                st.markdown("**Examples:**")
+                for example in info['examples']:
+                    st.write(f"• {example}")
+                
+                matching = filtered_df[
+                    filtered_df['Task_Category'] == category
+                ]['Matter Name'].value_counts().head(5)
+                
+                if len(matching) > 0:
+                    st.markdown("**Top 5 Matters in Your Data:**")
+                    for matter, count in matching.items():
+                        st.write(f"• {matter} ({count} entries)")
+        
+        st.markdown("---")
+        st.info("""
+        **Note:** Automation potentials are estimates based on current AI capabilities 
+        and the LegalBench framework. Actual results depend on implementation and oversight.
+        """)
+
+if __name__ == "__main__":
+    main()
