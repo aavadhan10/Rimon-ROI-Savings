@@ -492,7 +492,7 @@ def main():
     # Main tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📈 Overview (LegalBench)", 
-        "🎯 Rimon Benchmark",
+        "🎯 OLI Benchmark",
         "💰 Cost Savings", 
         "🔮 Predictions",
         "📚 Category Definitions"
