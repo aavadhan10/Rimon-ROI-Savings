@@ -290,6 +290,72 @@ RIMON_OLI_BENCHMARK = {
     }
 }
 
+
+# ============================================================================
+# TASK-LEVEL CLASSIFICATION (for detailed description CSV)
+# ============================================================================
+TASK_LEVEL_AUTOMATION = {
+    'Document-Review-Standard': {'description': 'Review of standard documents', 'automation_potential': 0.95, 'keywords': ['review agreement', 'review contract', 'review and revise', 'review draft', 'review standard', 'review form', 'review template', 'review nda', 'review msa', 'review amendment', 'review lease']},
+    'Email-Status-Updates': {'description': 'Status update emails', 'automation_potential': 0.92, 'keywords': ['email regarding status', 'email correspondence regarding', 'status update', 'follow up email', 'exchange emails', 'email to client regarding status']},
+    'Document-Drafting-Standard': {'description': 'Drafting standard forms', 'automation_potential': 0.93, 'keywords': ['draft amendment', 'draft addendum', 'draft standard', 'draft form', 'draft certificate', 'draft notice', 'draft letter agreement', 'prepare draft amendment']},
+    'Research-Straightforward': {'description': 'Straightforward legal research', 'automation_potential': 0.88, 'keywords': ['research case law', 'research statute', 'research regulation', 'research precedent', 'legal research regarding']},
+    'Form-Completion': {'description': 'Completing forms', 'automation_potential': 0.96, 'keywords': ['complete form', 'fill out', 'prepare filing', 'file notice', 'file certificate', 'submit form']},
+    'Document-Analysis': {'description': 'Analyzing documents', 'automation_potential': 0.85, 'keywords': ['review and analyze', 'analyze agreement', 'analyze contract', 'analyze terms', 'analyze provision', 'review for compliance', 'analyze draft']},
+    'Due-Diligence-Review': {'description': 'Due diligence review', 'automation_potential': 0.82, 'keywords': ['due diligence', 'dd review', 'review due diligence', 'diligence materials', 'data room review']},
+    'Discovery-Review': {'description': 'Document discovery review', 'automation_potential': 0.87, 'keywords': ['review discovery', 'review production', 'review interrogator', 'review request for production', 'discovery response', 'respond to discovery']},
+    'Clause-Extraction': {'description': 'Extracting specific clauses', 'automation_potential': 0.90, 'keywords': ['extract provision', 'identify clause', 'locate language', 'find provision', 'pull clause', 'summarize terms']},
+    'Drafting-Complex': {'description': 'Drafting complex agreements', 'automation_potential': 0.65, 'keywords': ['draft purchase agreement', 'draft psa', 'draft merger agreement', 'draft complex', 'draft financing', 'draft loan', 'draft settlement']},
+    'Negotiation-Support': {'description': 'Supporting negotiations', 'automation_potential': 0.60, 'keywords': ['revise per comments', 'address comments', 'incorporate revisions', 'revise based on', 'respond to comments', 'counter proposal']},
+    'Legal-Memos': {'description': 'Legal memoranda', 'automation_potential': 0.55, 'keywords': ['draft memo', 'memorandum', 'legal opinion', 'prepare memo', 'draft analysis', 'memo regarding']},
+    'Client-Calls': {'description': 'Client communications', 'automation_potential': 0.45, 'keywords': ['call with client', 'telephone conference with', 'conference call', 'client meeting', 'discuss with client', 'call regarding', 'phone call']},
+    'Court-Appearances': {'description': 'Court appearances', 'automation_potential': 0.30, 'keywords': ['court appearance', 'appear in court', 'attend hearing', 'oral argument', 'trial', 'deposition', 'attend conference']},
+    'Strategic-Advice': {'description': 'Strategic legal counseling', 'automation_potential': 0.35, 'keywords': ['advise regarding', 'counsel regarding', 'discuss strategy', 'strategic advice', 'recommendation regarding', 'consult on']},
+    'Negotiations': {'description': 'Negotiation sessions', 'automation_potential': 0.25, 'keywords': ['negotiate', 'negotiation', 'negotiating', 'negotiate terms', 'negotiate with', 'settlement discussion']},
+    'Internal-Admin': {'description': 'Internal administrative tasks', 'automation_potential': 0.10, 'keywords': ['internal', 'administrative', 'firm meeting', 'training', 'business development', 'marketing', 'time entry', 'billing']},
+    'General-Communication': {'description': 'General correspondence', 'automation_potential': 0.50, 'keywords': ['email', 'correspondence', 'communicate', 'discuss', 'exchange', 'speak with', 'follow up']}
+}
+
+def classify_task_description(description):
+    """Classify based on detailed task description"""
+    if pd.isna(description):
+        return 'General-Communication', 0.50
+    desc_lower = description.lower()
+    scores = {}
+    for category, info in TASK_LEVEL_AUTOMATION.items():
+        score = sum(1 for keyword in info['keywords'] if keyword in desc_lower)
+        if score > 0:
+            scores[category] = score
+    if scores:
+        best_category = max(scores, key=scores.get)
+        return best_category, TASK_LEVEL_AUTOMATION[best_category]['automation_potential']
+    return 'General-Communication', 0.50
+
+@st.cache_data
+def load_detailed_data(csv_path):
+    """Load detailed task description CSV"""
+    try:
+        df = pd.read_csv(csv_path, skiprows=2, encoding='utf-8-sig')
+        df.columns = df.columns.str.replace('\n', ' ').str.strip()
+        column_mapping = {'Entry Date': 'Date', 'Billable Time': 'Hours', 'Total Time': 'Total_Hours', 'Billable Amt': 'Billable_Amount', 'User': 'User_Name'}
+        df = df.rename(columns=column_mapping)
+        df['Date'] = pd.to_datetime(df['Date'], format='%m/%d/%Y', errors='coerce')
+        df['Hours'] = pd.to_numeric(df['Hours'], errors='coerce').fillna(0)
+        df['Year'], df['Month'] = df['Date'].dt.year, df['Date'].dt.month
+        df['Month_Name'], df['Quarter'] = df['Date'].dt.strftime('%B'), df['Date'].dt.quarter
+        df['Description'] = df['Description'].fillna('Unknown')
+        return df
+    except Exception as e:
+        st.error(f"Could not load detailed CSV: {str(e)}")
+        return None
+
+def check_for_detailed_csv():
+    """Check if detailed CSV exists"""
+    import os
+    for path in ['./data/matter_description.csv', '/mnt/user-data/uploads/matter_description.csv', './matter_description.csv']:
+        if os.path.exists(path):
+            return path
+    return None
+
 def classify_matter_legalbench(matter_name):
     """Classify a matter using LegalBench framework"""
     if pd.isna(matter_name):
@@ -447,7 +513,7 @@ def main():
     
     # Load data
     try:
-        csv_path = '2025_Jan-Oct_time_entry_export.csv'
+        csv_path = '/mnt/user-data/uploads/2025_Jan-Oct_time_entry_export.csv'
         df = load_data(csv_path)
         
         # Handle flat fee entries - count as 1 hour for analysis
@@ -490,9 +556,25 @@ def main():
     filtered_df['Manual_Hours'] = filtered_df['Billable Hours'] - filtered_df['Automatable_Hours']
     
     # Main tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    # Check for detailed CSV
+    detailed_csv_path = check_for_detailed_csv()
+    has_detailed_data = detailed_csv_path is not None
+    
+    if has_detailed_data:
+        st.sidebar.success("✨ Task-level data detected! Check the 'Task-Level Deep Dive' tab.")
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📈 Overview (LegalBench)", 
+            "🎯 OLI Benchmark",
+            "💰 Cost Savings", 
+            "🔮 Predictions",
+            "📚 Category Definitions",
+            "🔬 Task-Level Deep Dive"
+        ])
+    else:
+        st.sidebar.info("💡 Add `matter_description.csv` to data folder for task-level analysis!")
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📈 Overview (LegalBench)", 
-        "🎯 OLI Benchmark",
+        "🎯 Rimon Benchmark",
         "💰 Cost Savings", 
         "🔮 Predictions",
         "📚 Category Definitions"
@@ -1456,6 +1538,214 @@ def main():
         **Note:** Automation potentials are estimates based on current AI capabilities 
         and the LegalBench framework. Actual results depend on implementation and oversight.
         """)
+
+
+    
+    # ========================================================================
+    # TAB 6: TASK-LEVEL DEEP DIVE (conditional)
+    # ========================================================================
+    if has_detailed_data:
+        with tab6:
+            st.header("🔬 Task-Level Deep Dive Analysis")
+            
+            st.markdown("""
+            ### 🎯 Ultra-Precise Automation Analysis
+            This tab uses **actual task descriptions** for much more accurate automation scoring.
+            
+            **Examples from your data:**
+            - "Email regarding status" → 92% automatable
+            - "Review and analyze agreement" → 85% automatable
+            - "Telephone conference with client" → 45% automatable
+            - "Negotiate settlement" → 25% automatable
+            """)
+            
+            # Load detailed data
+            with st.spinner("🔬 Loading detailed task data..."):
+                detailed_df = load_detailed_data(detailed_csv_path)
+            
+            if detailed_df is not None and len(detailed_df) > 0:
+                # Classify tasks
+                st.info(f"📊 Analyzing {len(detailed_df):,} detailed task entries...")
+                detailed_df[['Task_Type', 'Task_Automation']] = detailed_df['Description'].apply(
+                    lambda x: pd.Series(classify_task_description(x))
+                )
+                
+                # Calculate automatable hours
+                detailed_df['Task_Automatable_Hours'] = detailed_df['Hours'] * detailed_df['Task_Automation']
+                detailed_df['Task_Manual_Hours'] = detailed_df['Hours'] - detailed_df['Task_Automatable_Hours']
+                
+                # Key metrics
+                st.markdown("---")
+                st.subheader("📊 Task-Level Metrics")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                task_total = detailed_df['Hours'].sum()
+                task_auto = detailed_df['Task_Automatable_Hours'].sum()
+                task_rate = (task_auto / task_total * 100) if task_total > 0 else 0
+                
+                with col1:
+                    st.metric(
+                        label="Total Hours Analyzed",
+                        value=f"{task_total:,.0f}",
+                        help="From detailed task descriptions"
+                    )
+                
+                with col2:
+                    st.metric(
+                        label="AI-Automatable (Task-Level)",
+                        value=f"{task_auto:,.0f}",
+                        delta=f"{task_rate:.1f}%",
+                        help="Based on specific task descriptions"
+                    )
+                
+                with col3:
+                    avg_task_auto = detailed_df['Task_Automation'].mean() * 100
+                    st.metric(
+                        label="Avg Task Automation",
+                        value=f"{avg_task_auto:.1f}%",
+                        help="Average automation potential per task"
+                    )
+                
+                with col4:
+                    unique_tasks = detailed_df['Task_Type'].nunique()
+                    st.metric(
+                        label="Unique Task Types",
+                        value=f"{unique_tasks}"
+                    )
+                
+                st.markdown("---")
+                
+                # Task type breakdown
+                st.subheader("🎯 Automation by Task Type")
+                
+                task_breakdown = detailed_df.groupby('Task_Type').agg({
+                    'Hours': 'sum',
+                    'Task_Automatable_Hours': 'sum',
+                    'Task_Automation': 'first'
+                }).reset_index()
+                task_breakdown = task_breakdown.sort_values('Task_Automatable_Hours', ascending=False)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    fig = px.bar(
+                        task_breakdown.head(12),
+                        x='Task_Automatable_Hours',
+                        y='Task_Type',
+                        orientation='h',
+                        title='Top 12 Task Types by Automatable Hours',
+                        color='Task_Automation',
+                        color_continuous_scale='RdYlGn',
+                        text='Task_Automatable_Hours'
+                    )
+                    fig.update_traces(texttemplate='%{text:.0f}h', textposition='outside')
+                    fig.update_layout(height=500, yaxis={'categoryorder': 'total ascending'})
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        y=task_breakdown.head(12)['Task_Type'],
+                        x=task_breakdown.head(12)['Hours'],
+                        name='Total Hours',
+                        orientation='h',
+                        marker_color='lightblue'
+                    ))
+                    fig.add_trace(go.Bar(
+                        y=task_breakdown.head(12)['Task_Type'],
+                        x=task_breakdown.head(12)['Task_Automatable_Hours'],
+                        name='Automatable',
+                        orientation='h',
+                        marker_color='darkgreen'
+                    ))
+                    fig.update_layout(
+                        title='Total vs Automatable Hours',
+                        height=500,
+                        barmode='overlay',
+                        yaxis={'categoryorder': 'total ascending'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                st.markdown("---")
+                
+                # Sample tasks
+                st.subheader("📝 Sample Task Classifications")
+                
+                sample_tasks = []
+                for task_type in task_breakdown.head(10)['Task_Type']:
+                    sample = detailed_df[detailed_df['Task_Type'] == task_type].head(2)
+                    sample_tasks.append(sample)
+                
+                if sample_tasks:
+                    sample_df = pd.concat(sample_tasks)
+                    display_cols = ['Description', 'Task_Type', 'Task_Automation', 'Hours']
+                    
+                    st.dataframe(
+                        sample_df[display_cols].style.format({
+                            'Task_Automation': '{:.0%}',
+                            'Hours': '{:.2f}'
+                        }),
+                        use_container_width=True,
+                        height=400
+                    )
+                
+                st.markdown("---")
+                
+                # Comparison
+                st.subheader("📊 Task-Level vs Matter-Level Comparison")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.success(f"""
+                    **🔬 Task-Level Analysis:**
+                    - Dataset: {len(detailed_df):,} entries
+                    - Automatable: {task_auto:,.0f} hours
+                    - Rate: {task_rate:.1f}%
+                    - Precision: High (task descriptions)
+                    """)
+                
+                with col2:
+                    st.info(f"""
+                    **📊 Matter-Level Analysis:**
+                    - Dataset: {len(filtered_df):,} entries
+                    - Automatable: {automatable_hours:,.0f} hours
+                    - Rate: {automation_rate:.1f}%
+                    - Precision: Medium (matter names)
+                    """)
+                
+                difference = abs(task_rate - automation_rate)
+                if task_rate > automation_rate:
+                    st.warning(f"⚡ Task-level analysis shows {difference:.1f} percentage points MORE automation potential!")
+                else:
+                    st.info(f"📉 Task-level analysis shows {difference:.1f} percentage points LESS automation potential (more conservative).")
+                
+                # Top opportunities
+                st.markdown("---")
+                st.subheader("🎯 Top Automation Opportunities (Task-Level)")
+                
+                high_auto_tasks = detailed_df[detailed_df['Task_Automation'] >= 0.85].groupby('Description').agg({
+                    'Hours': 'sum',
+                    'Task_Automation': 'first'
+                }).reset_index().sort_values('Hours', ascending=False).head(20)
+                
+                if len(high_auto_tasks) > 0:
+                    st.write(f"**{len(high_auto_tasks)} high-automation tasks (≥85%) with most hours:**")
+                    st.dataframe(
+                        high_auto_tasks.style.format({
+                            'Task_Automation': '{:.0%}',
+                            'Hours': '{:.1f}'
+                        }),
+                        use_container_width=True,
+                        height=400
+                    )
+                else:
+                    st.info("No high-automation tasks found in this dataset.")
+            
+            else:
+                st.error("❌ Could not load detailed CSV data.")
+
 
 if __name__ == "__main__":
     main()
