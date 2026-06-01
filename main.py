@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -7,6 +8,23 @@ import numpy as np
 from datetime import datetime
 import re
 from collections import Counter
+
+# ---------------------------------------------------------------------------
+# Data file paths
+# ---------------------------------------------------------------------------
+CSV_PATH = '2025_Jan-Oct_time_entry_export.csv'
+XLSX_CURRENCY_PATH = os.path.join(
+    '2025-11_to_2026-05_data',
+    'RPC_FMS_Time_Entries_w_Currency_2025_11_01 _to_2026_05_29.xlsx'
+)
+DETAIL_CSV_PATH = 'matter_description.csv'
+DETAIL_XLSX_PATH = os.path.join(
+    '2025-11_to_2026-05_data',
+    'RPC_FMS_Time_Entries_w_Activities_2025_11_01_to_2026_05_29.xlsx'
+)
+# Entries with Date of Work beyond this date are future-dated flat fees;
+# exclude them so the projections tab works correctly.
+DATA_CUTOFF_DATE = pd.Timestamp('2026-05-29')
 
 # Page configuration
 st.set_page_config(
@@ -331,30 +349,82 @@ def classify_task_description(description):
     return 'General-Communication', 0.50
 
 @st.cache_data
-def load_detailed_data(csv_path):
-    """Load detailed task description CSV"""
-    try:
-        df = pd.read_csv(csv_path, skiprows=2, encoding='utf-8-sig')
-        df.columns = df.columns.str.replace('\n', ' ').str.strip()
-        column_mapping = {'Entry Date': 'Date', 'Billable Time': 'Hours', 'Total Time': 'Total_Hours', 'Billable Amt': 'Billable_Amount', 'User': 'User_Name'}
-        df = df.rename(columns=column_mapping)
-        df['Date'] = pd.to_datetime(df['Date'], format='%m/%d/%Y', errors='coerce')
-        df['Hours'] = pd.to_numeric(df['Hours'], errors='coerce').fillna(0)
-        df['Year'], df['Month'] = df['Date'].dt.year, df['Date'].dt.month
-        df['Month_Name'], df['Quarter'] = df['Date'].dt.strftime('%B'), df['Date'].dt.quarter
-        df['Description'] = df['Description'].fillna('Unknown')
-        return df
-    except Exception as e:
-        st.error(f"Could not load detailed CSV: {str(e)}")
+def load_detailed_data():
+    """Load and combine task-level description data from all available sources.
+
+    Sources (combined if both exist):
+    - matter_description.csv  – Oct 2025, messy multi-block CSV export
+    - DETAIL_XLSX_PATH        – Nov 2025–May 2026, clean flat Excel export
+    """
+    dfs = []
+
+    # --- Oct 2025 CSV (messy multi-block format) ---
+    for path in ['./data/matter_description.csv', 'matter_description.csv',
+                 './matter_description.csv']:
+        if os.path.exists(path):
+            try:
+                df_csv = pd.read_csv(
+                    path, skiprows=2, encoding='utf-8-sig', on_bad_lines='skip'
+                )
+                df_csv.columns = df_csv.columns.str.replace('\n', ' ').str.strip()
+                # Strip out subtotal / grand-total rows that the multi-block export injects
+                if 'ID' in df_csv.columns:
+                    df_csv = df_csv[
+                        pd.to_numeric(df_csv['ID'], errors='coerce').notna()
+                    ]
+                dfs.append(df_csv)
+            except Exception:
+                pass
+            break
+
+    # --- Nov 2025–May 2026 Activities Excel (clean flat table) ---
+    if os.path.exists(DETAIL_XLSX_PATH):
+        try:
+            df_xlsx = pd.read_excel(DETAIL_XLSX_PATH, header=0)
+            dfs.append(df_xlsx)
+        except Exception:
+            pass
+
+    if not dfs:
         return None
 
-def check_for_detailed_csv():
-    """Check if detailed CSV exists"""
-    import os
-    for path in ['./data/matter_description.csv', 'matter_description.csv', './matter_description.csv']:
-        if os.path.exists(path):
-            return path
-    return None
+    df = pd.concat(dfs, ignore_index=True)
+
+    # Normalise column names (strip whitespace / embedded newlines)
+    df.columns = df.columns.str.replace('\n', ' ').str.strip()
+
+    # Unified column mapping for both sources
+    df = df.rename(columns={
+        'Entry Date':   'Date',
+        'Billable Time':'Hours',
+        'Total Time':   'Total_Hours',
+        'Billable Amt': 'Billable_Amount',
+        'User':         'User_Name',
+    })
+
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    df['Hours'] = pd.to_numeric(df['Hours'], errors='coerce').fillna(0)
+
+    # Drop rows with no parseable date (subtotals, blank lines, etc.)
+    df = df[df['Date'].notna()]
+
+    df['Year'] = df['Date'].dt.year
+    df['Month'] = df['Date'].dt.month
+    df['Month_Name'] = df['Date'].dt.strftime('%B')
+    df['Quarter'] = df['Date'].dt.quarter
+    df['Description'] = df['Description'].fillna('Unknown')
+
+    return df
+
+
+def check_for_detailed_data():
+    """Return True if any task-level detail data source exists."""
+    csv_exists = any(
+        os.path.exists(p)
+        for p in ['./data/matter_description.csv', 'matter_description.csv',
+                  './matter_description.csv']
+    )
+    return csv_exists or os.path.exists(DETAIL_XLSX_PATH)
 
 def classify_matter_legalbench(matter_name):
     """Classify a matter using LegalBench framework"""
@@ -405,29 +475,56 @@ def classify_matter_oli(matter_name):
         return 'Unclassified', 0.0
 
 @st.cache_data
-def load_data(csv_path):
-    """Load and preprocess the Rimon CSV data"""
-    # Skip first 2 header rows
-    df = pd.read_csv(csv_path, skiprows=2, encoding='utf-8-sig')
-    
-    # Convert date to datetime
-    df['Date of Work'] = pd.to_datetime(df['Date of Work'], format='%m/%d/%Y', errors='coerce')
-    
+def load_data():
+    """Load and combine Jan–Oct 2025 CSV with Nov 2025–May 2026 Excel."""
+    dfs = []
+
+    # --- Jan–Oct 2025 CSV ---
+    if os.path.exists(CSV_PATH):
+        df_csv = pd.read_csv(CSV_PATH, skiprows=2, encoding='utf-8-sig')
+        df_csv['Date of Work'] = pd.to_datetime(
+            df_csv['Date of Work'], format='%m/%d/%Y', errors='coerce'
+        )
+        df_csv['Date Created'] = pd.to_datetime(
+            df_csv['Date Created'], format='%m/%d/%Y', errors='coerce'
+        )
+        # CSV stores un-invoiced rows as the literal string "null"
+        df_csv['Invoice ID'] = df_csv['Invoice ID'].replace('null', pd.NA)
+        dfs.append(df_csv)
+
+    # --- Nov 2025–May 2026 Excel ---
+    if os.path.exists(XLSX_CURRENCY_PATH):
+        df_xlsx = pd.read_excel(XLSX_CURRENCY_PATH, header=0)
+        # Dates arrive as datetime objects; coerce any edge cases
+        df_xlsx['Date of Work'] = pd.to_datetime(df_xlsx['Date of Work'], errors='coerce')
+        df_xlsx['Date Created'] = pd.to_datetime(df_xlsx['Date Created'], errors='coerce')
+        dfs.append(df_xlsx)
+
+    if not dfs:
+        raise FileNotFoundError(
+            f"No data files found. Expected:\n  {CSV_PATH}\n  {XLSX_CURRENCY_PATH}"
+        )
+
+    df = pd.concat(dfs, ignore_index=True)
+
+    # Drop any accidental duplicates (same Time Entry ID in both files)
+    df = df.drop_duplicates(subset=['Time Entry ID'])
+
+    # Exclude future-dated flat-fee entries beyond the export cutoff so
+    # the projections tab doesn't treat them as actual future-month data.
+    df = df[df['Date of Work'] <= DATA_CUTOFF_DATE]
+
     # Convert hours to numeric
-    df['Billable Hours'] = pd.to_numeric(df['Billable Hours'], errors='coerce')
-    
-    # Fill NaN hours with 0
-    df['Billable Hours'] = df['Billable Hours'].fillna(0)
-    
-    # Extract year, month, quarter
+    df['Billable Hours'] = pd.to_numeric(df['Billable Hours'], errors='coerce').fillna(0)
+
+    # Derive time columns
     df['Year'] = df['Date of Work'].dt.year
     df['Month'] = df['Date of Work'].dt.month
     df['Month_Name'] = df['Date of Work'].dt.strftime('%B')
     df['Quarter'] = df['Date of Work'].dt.quarter
-    
-    # Fill NaN in Matter Name with 'Unknown'
+
     df['Matter Name'] = df['Matter Name'].fillna('Unknown')
-    
+
     return df
 
 def extract_keywords(matter_names):
@@ -500,7 +597,7 @@ def main():
         return
     
     st.markdown('<h1 class="main-header">⚖️ Rimon Legal AI Automation Dashboard</h1>', unsafe_allow_html=True)
-    st.markdown("### Rimon P.C. - AI-Powered Efficiency Analysis (Jan-Oct 2025)")
+    st.markdown("### Rimon P.C. - AI-Powered Efficiency Analysis (Jan 2025 – May 2026)")
     
     # Sidebar with logout option
     st.sidebar.title("📊 Dashboard Controls")
@@ -513,15 +610,18 @@ def main():
     
     # Load data
     try:
-        csv_path = '2025_Jan-Oct_time_entry_export.csv'
-        df = load_data(csv_path)
-        
+        df = load_data()
+
         # Handle flat fee entries - count as 1 hour for analysis
         df['Original_Hours'] = df['Billable Hours'].copy()
         df.loc[df['Rate Type'] == 'Flat Fee', 'Billable Hours'] = 1.0
-        
+
         st.sidebar.success(f"✅ Loaded {len(df):,} time entries")
-        
+
+        date_min = df['Date of Work'].min().strftime('%b %Y')
+        date_max = df['Date of Work'].max().strftime('%b %Y')
+        st.sidebar.info(f"📅 Data range: {date_min} – {date_max}")
+
         flat_fee_count = (df['Rate Type'] == 'Flat Fee').sum()
         if flat_fee_count > 0:
             st.sidebar.info(f"ℹ️ {flat_fee_count:,} flat fee entries counted as 1 hour each")
@@ -556,10 +656,9 @@ def main():
     filtered_df['Manual_Hours'] = filtered_df['Billable Hours'] - filtered_df['Automatable_Hours']
     
     # Main tabs
-    # Check for detailed CSV
-    detailed_csv_path = check_for_detailed_csv()
-    has_detailed_data = detailed_csv_path is not None
-    
+    # Check for detailed task-description data
+    has_detailed_data = check_for_detailed_data()
+
     if has_detailed_data:
         st.sidebar.success("✨ Task-level data detected! Check the 'Task-Level Deep Dive' tab.")
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -589,7 +688,7 @@ def main():
         This analysis is based on the **LegalBench framework** adapted for Rimon's matter-based time entries. 
         Each matter type has been assigned an automation potential based on current AI capabilities.
         
-        **Note:** *Flat fee entries are counted as 1 hour for analysis purposes. Analysis based on Jan-Oct 2025 data.*
+        **Note:** *Flat fee entries are counted as 1 hour for analysis purposes. Analysis covers Jan 2025 – May 2026.*
         """)
         
         with st.expander("📊 **How We Calculate Your Automation Potential**", expanded=False):
@@ -925,9 +1024,9 @@ def main():
         This tab uses **Rimon Benchmark** - a custom assessment tailored to Rimon's specific 
         practice areas and matter types.
         
-        **Note:** *Flat fee entries are counted as 1 hour for analysis purposes.*
+        **Note:** *Flat fee entries are counted as 1 hour for analysis purposes. Analysis covers Jan 2025 – May 2026.*
         """)
-        
+
         # Classify using Rimon OLI
         with st.spinner("🤖 Analyzing using Rimon Benchmark..."):
             filtered_df[['OLI_Category', 'OLI_Automation_Potential']] = filtered_df['Matter Name'].apply(
@@ -1292,17 +1391,26 @@ def main():
                 line=dict(color='green', width=3)
             ))
             fig.update_layout(
-                title='Cumulative Cost Savings (Jan-Oct 2025)',
+                title='Cumulative Cost Savings (Jan 2025 – May 2026)',
                 height=400
             )
             st.plotly_chart(fig, use_container_width=True)
     
     # TAB 4: Predictions
     with tab4:
-        st.header("🔮 2025 Full Year Projections")
-        
-        current_data = filtered_df[filtered_df['Year'] == 2025]
-        
+        # Dynamically select the most recent year that has partial data.
+        # Cap at today so future-dated flat fees don't push latest_month to 12.
+        today = pd.Timestamp.today()
+        all_years = sorted(filtered_df['Year'].dropna().unique().astype(int))
+        projection_year = int(max(all_years)) if all_years else today.year
+
+        st.header(f"🔮 {projection_year} Full Year Projections")
+
+        current_data = filtered_df[
+            (filtered_df['Year'] == projection_year) &
+            (filtered_df['Date of Work'] <= today)
+        ]
+
         if len(current_data) > 0:
             latest_month = current_data['Month'].max()
             
@@ -1398,7 +1506,7 @@ def main():
                 ))
                 
                 fig.update_layout(
-                    title='2025 Monthly Hours Projection',
+                    title=f'{projection_year} Monthly Hours Projection',
                     barmode='group',
                     height=400
                 )
@@ -1500,7 +1608,7 @@ def main():
                     height=400
                 )
         else:
-            st.warning("No 2025 data for projections")
+            st.warning(f"No {projection_year} data available for projections.")
     
     # TAB 5: Definitions
     with tab5:
@@ -1546,38 +1654,36 @@ def main():
     # ========================================================================
     if has_detailed_data:
         with tab6:
-            st.header("🔬 Task-Level Deep Dive: October 2025 Sample")
-            
+            st.header("🔬 Task-Level Deep Dive: Oct 2025 – May 2026")
+
             st.markdown("""
-            ### 🎯 Ultra-Precise Automation Analysis (October Data)
-            
-            **⚠️ Note:** This analyzes October 2025 data only (16K entries), which is ALREADY INCLUDED 
-            in the main Jan-Oct dataset. This tab shows what's possible with detailed task descriptions.
-            
-            This tab uses **actual task descriptions** for much more accurate automation scoring.
-            
+            ### 🎯 Ultra-Precise Automation Analysis (Task Description Data)
+
+            This tab uses **actual task descriptions** for much more accurate automation scoring
+            than the matter-name keyword matching used in the other tabs.
+
             **Examples from your data:**
             - "Email regarding status" → 92% automatable
             - "Review and analyze agreement" → 85% automatable
             - "Telephone conference with client" → 45% automatable
             - "Negotiate settlement" → 25% automatable
             """)
-            
+
             st.info("""
             💡 **What This Tab Shows:**
-            
-            This is a **deep dive into October 2025** using detailed task descriptions. 
-            October's data is already included in the Jan-Oct totals in the other tabs.
-            
+
+            Task-level data covers **Oct 2025 – May 2026** (Oct 2025 from the matter_description.csv
+            export; Nov 2025 – May 2026 from the Activities Excel export). This data is a subset of
+            what is shown in the main tabs.
+
             This tab demonstrates:
             - How much MORE PRECISE we can be with detailed task descriptions
             - What automation looks like at the task level vs matter level
-            - A model for future analysis if you export detailed descriptions for all months
             """)
             
             # Load detailed data
-            with st.spinner("🔬 Loading October detailed task data..."):
-                detailed_df = load_detailed_data(detailed_csv_path)
+            with st.spinner("🔬 Loading task-level detail data..."):
+                detailed_df = load_detailed_data()
             
             if detailed_df is not None and len(detailed_df) > 0:
                 # Classify tasks
@@ -1712,18 +1818,19 @@ def main():
                 st.subheader("📊 Task-Level vs Matter-Level Comparison")
                 
                 st.warning("""
-                **⚠️ Important:** Both analyses use the SAME October 2025 data:
-                - Task-Level (this tab): October analyzed by detailed task descriptions
-                - Matter-Level (main tabs): October analyzed by matter names only
-                - The October data is already included in the Jan-Oct totals shown in other tabs
+                **⚠️ Important:** The task-level data (this tab) is a subset of the full dataset:
+                - Task-Level (this tab): analyzed using detailed free-text task descriptions
+                - Matter-Level (main tabs): entire date range analyzed by matter names only
+                - Task-level data covers Oct 2025 – May 2026 and is included in the main tab totals
                 """)
                 
                 col1, col2 = st.columns(2)
                 
                 with col1:
+                    task_date_min = detailed_df['Date'].min().strftime('%b %Y')
+                    task_date_max = detailed_df['Date'].max().strftime('%b %Y')
                     st.success(f"""
-                    **🔬 Task-Level (October Sample):**
-                    - Dataset: October 2025 only
+                    **🔬 Task-Level ({task_date_min} – {task_date_max}):**
                     - Entries: {len(detailed_df):,}
                     - Automatable: {task_auto:,.0f} hours
                     - Rate: {task_rate:.1f}%
@@ -1731,26 +1838,28 @@ def main():
                     """)
                 
                 with col2:
-                    # Calculate October data from main dataset for comparison
-                    oct_df = filtered_df[filtered_df['Month'] == 10]
-                    oct_auto = oct_df['Automatable_Hours'].sum() if len(oct_df) > 0 else 0
-                    oct_total = oct_df['Billable Hours'].sum() if len(oct_df) > 0 else 0
-                    oct_rate = (oct_auto / oct_total * 100) if oct_total > 0 else 0
-                    
+                    # Compare against same date range in main dataset
+                    overlap_df = filtered_df[
+                        (filtered_df['Date of Work'] >= detailed_df['Date'].min()) &
+                        (filtered_df['Date of Work'] <= detailed_df['Date'].max())
+                    ]
+                    overlap_auto = overlap_df['Automatable_Hours'].sum() if len(overlap_df) > 0 else 0
+                    overlap_total = overlap_df['Billable Hours'].sum() if len(overlap_df) > 0 else 0
+                    overlap_rate = (overlap_auto / overlap_total * 100) if overlap_total > 0 else 0
+
                     st.info(f"""
-                    **📊 Matter-Level (October Same Data):**
-                    - Dataset: October 2025 only  
-                    - Entries: {len(oct_df):,}
-                    - Automatable: {oct_auto:,.0f} hours
-                    - Rate: {oct_rate:.1f}%
+                    **📊 Matter-Level (same date range):**
+                    - Entries: {len(overlap_df):,}
+                    - Automatable: {overlap_auto:,.0f} hours
+                    - Rate: {overlap_rate:.1f}%
                     - Precision: MEDIUM (matter names)
                     """)
                 
-                difference = abs(task_rate - automation_rate)
-                if task_rate > automation_rate:
-                    st.warning(f"⚡ Task-level analysis shows {difference:.1f} percentage points MORE automation potential!")
+                difference = abs(task_rate - overlap_rate)
+                if task_rate > overlap_rate:
+                    st.warning(f"⚡ Task-level analysis shows {difference:.1f} percentage points MORE automation potential than matter-level!")
                 else:
-                    st.info(f"📉 Task-level analysis shows {difference:.1f} percentage points LESS automation potential (more conservative).")
+                    st.info(f"📉 Task-level analysis shows {difference:.1f} percentage points LESS automation potential than matter-level (more conservative).")
                 
                 # Top opportunities
                 st.markdown("---")
